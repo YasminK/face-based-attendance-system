@@ -68,6 +68,11 @@ class FaceDetectionWidget(QtWidgets.QWidget):
     def image_data_slot(self, image_data):
         faces = self.detect_faces(image_data)
         
+        if len(faces) > 0 and self.main_widget.photoCount < 10:
+            self.main_widget.captureBtn.setEnabled(True)
+        else:
+            self.main_widget.captureBtn.setEnabled(False)
+        
         for (x, y, w, h) in faces:
             cv2.rectangle(image_data,
                           (x, y),
