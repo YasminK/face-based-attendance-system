@@ -4,112 +4,160 @@ Created on Fri Nov  2 15:27:10 2018
 
 @author: Yasmin Kamel
 """
-
 import sys
-from PyQt5 import QtCore, QtWidgets, QtGui
-from PyQt5.QtWidgets import QMainWindow, QLabel, QGridLayout, QWidget
-from PyQt5.QtCore import QSize    
 import os
-import pandas as pd
 import cv2
+import numpy as np
+from PyQt5 import QtCore
+from PyQt5 import QtWidgets
+from PyQt5 import QtGui
+import pandas as pd
 import math
-import numpy as np 
 
-class Registration(QMainWindow):
-    def __init__(self):
-        QMainWindow.__init__(self)
-   
+class RecordVideo(QtCore.QObject):
+    image_data = QtCore.pyqtSignal(np.ndarray)
+
+    def __init__(self, mainWidget, parent=None):
+        super().__init__(parent)
+        
+        self.mainWidget = mainWidget
+        self.timer = QtCore.QBasicTimer()
+
+    def start_recording(self):
+        self.timer.start(0, self)
+        self.camera = cv2.VideoCapture(0)
+        self.mainWidget.openCameraBtn.setVisible(False)
+        self.mainWidget.captureBtn.setVisible(True)
+        self.mainWidget.photoCountText.setVisible(True)
+        self.mainWidget.captureBtn.setEnabled(True)
+        self.mainWidget.face_detection_widget.setVisible(True)
+        self.mainWidget.mainWindow.setFixedSize(QtCore.QSize(830, 600))
+
+    def timerEvent(self, event):
+        if (event.timerId() != self.timer.timerId()):
+            return
+
+        read, data = self.camera.read()
+        if read:
+            self.image_data.emit(data)
+
+
+class FaceDetectionWidget(QtWidgets.QWidget):
+    def __init__(self, haar_cascade_filepath, main_widget, parent=None):
+        super().__init__(parent)
+        self.main_widget = main_widget
+        self.classifier = cv2.CascadeClassifier(haar_cascade_filepath)
+        self.image = QtGui.QImage()
+        self._green = (0, 255,0)
+        self._width = 2
+        self._min_size = (30, 30)
+
+    def detect_faces(self, image: np.ndarray):
+        # haarclassifiers work better in black and white
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        gray_image = cv2.equalizeHist(gray_image)
+
+        faces = self.classifier.detectMultiScale(gray_image,
+                                                 scaleFactor=1.3,
+                                                 minNeighbors=4,
+                                                 flags=cv2.CASCADE_SCALE_IMAGE,
+                                                 minSize=self._min_size)
+
+        return faces
+
+    def image_data_slot(self, image_data):
+        faces = self.detect_faces(image_data)
+        
+        for (x, y, w, h) in faces:
+            cv2.rectangle(image_data,
+                          (x, y),
+                          (x+w, y+h),
+                          self._green,
+                          self._width)
+
+        self.image = self.get_qimage(image_data)
+        if self.image.size() != self.size():
+            self.setFixedSize(self.image.size())
+
+        self.update()
+
+    def get_qimage(self, image: np.ndarray):
+        height, width, colors = image.shape
+        bytesPerLine = 3 * width
+        QImage = QtGui.QImage
+
+        image = QImage(image.data,
+                       width,
+                       height,
+                       bytesPerLine,
+                       QImage.Format_RGB888)
+
+        image = image.rgbSwapped()
+        return image
+
+    def paintEvent(self, event):
+        painter = QtGui.QPainter(self)
+        painter.drawImage(0, 0, self.image)
+        self.image = QtGui.QImage()
+
+
+class MainWidget(QtWidgets.QWidget):
+    def __init__(self, haarcascade_filepath, mainWindow, parent=None):
+        super().__init__(parent)
+        self.mainWindow = mainWindow
         self.dataFileName = 'employees.csv'
-    
-        self.setFixedSize(QSize(500, 150))
-        self.setWindowTitle("Attendance System") 
         
-        centralWidget = QWidget(self)          
-        self.setCentralWidget(centralWidget)   
- 
-        gridLayout = QGridLayout(self)     
-        centralWidget.setLayout(gridLayout)  
+        fp = haarcascade_filepath
+        self.face_detection_widget = FaceDetectionWidget(fp, self)
         
-        title = QLabel("Enter the name", self) 
-        title.setAlignment(QtCore.Qt.AlignLeft)
-        gridLayout.addWidget(title, 0, 0)
+        self.record_video = RecordVideo(self)
+
+        image_data_slot = self.face_detection_widget.image_data_slot
+        self.record_video.image_data.connect(image_data_slot)
+
+        layout = QtWidgets.QGridLayout(self)    
+
+        self.title = QtWidgets.QLabel("Enter the name", self) 
+        self.title.setAlignment(QtCore.Qt.AlignLeft)
+        layout.addWidget(self.title,0,0)
         
         self.nameText = QtWidgets.QLineEdit(self)
         self.nameText.textChanged.connect(self.disableButton)
-        gridLayout.addWidget(self.nameText, 0, 1)
+        layout.addWidget(self.nameText,0,1)
         
-        menu1 = self.menuBar().addMenu('New')
-        action1 = menu1.addAction('New Employee')
-        action1.triggered.connect(self.newRegister)
-        
-        menu2 = self.menuBar().addMenu('Quit')
-        action2 = menu2.addAction('Quit')
-        action2.triggered.connect(QtWidgets.QApplication.quit)
-        
-        self.photoTitle = QLabel("Take 10 photos", self) 
+        self.photoTitle = QtWidgets.QLabel("Take 10 photos", self) 
         self.photoTitle.setAlignment(QtCore.Qt.AlignLeft)
         self.photoTitle.setAlignment(QtCore.Qt.AlignCenter)
-        gridLayout.addWidget(self.photoTitle, 1, 0)
-        
-        self.photoLabel = QtWidgets.QLabel(self)
-        self.photoLabel.setVisible(False)
-        gridLayout.addWidget(self.photoLabel, 1, 1)
-        
-        self.openCameraBtn = QtWidgets.QPushButton("Open Camera")
-        self.openCameraBtn.clicked.connect(self.openCamera)
-        gridLayout.addWidget(self.openCameraBtn, 1, 1)
+        layout.addWidget(self.photoTitle,1,0)
+
+        layout.addWidget(self.face_detection_widget)
+        self.openCameraBtn = QtWidgets.QPushButton('Open Camera')
+        layout.addWidget(self.openCameraBtn,1,2)
+
+        self.openCameraBtn.clicked.connect(self.record_video.start_recording)
         
         self.captureBtn = QtWidgets.QPushButton("Capture")
         self.captureBtn.setVisible(False)
         self.captureBtn.clicked.connect(self.photoCapture)
         self.photoCount = 0
         self.employeeId = read_last_id(self.dataFileName) + 1
-        gridLayout.addWidget(self.captureBtn, 1, 2)
+        layout.addWidget(self.captureBtn, 1, 2)
         
-        self.photoCountText = QLabel(np.str(self.photoCount), self)
+        self.photoCountText = QtWidgets.QLabel(np.str(self.photoCount), self)
         self.photoCountText.setVisible(False)
-        gridLayout.addWidget(self.photoCountText, 1, 3)
+        layout.addWidget(self.photoCountText, 1, 3)
         
         self.saveBtn = QtWidgets.QPushButton("Save")
         self.saveBtn.setEnabled(False)
         self.saveBtn.clicked.connect(self.save)
-        gridLayout.addWidget(self.saveBtn, 2, 1)
-    
-    def openCamera(self):
-        self.openCameraBtn.setVisible(False)
-        self.captureBtn.setVisible(True)
-        self.photoLabel.setVisible(True)
-        self.photoCountText.setVisible(True)
-        self.captureBtn.setEnabled(True)
-        self.setFixedSize(QSize(500, 400))
-        camera_port = 0
-        self.camera = cv2.VideoCapture(camera_port)
-        self.timer = QtCore.QTimer(self)
-        self.timer.timeout.connect(self.update_frame)
-        self.timer.start(5)
-    
-    def update_frame(self):
-        ret,self.image=self.camera.read()
-        self.displayImage(self.image,1)
-    
-    def displayImage(self,img,window=1):
-        qformat=QtGui.QImage.Format_Indexed8
-        if len(img.shape)==3:
-            if img.shape[2]==4:
-                qformat=QtGui.QImage.Format_RGB8888
-            else:
-                qformat=QtGui.QImage.Format_RGB888
-        outImage=QtGui.QImage(img,img.shape[1],img.shape[0],img.strides[0],qformat)
-
-        outImage=outImage.rgbSwapped()
-        if window==1:
-            self.photoLabel.setPixmap(QtGui.QPixmap.fromImage(outImage))
-            self.photoLabel.setScaledContents(True)
+        layout.addWidget(self.saveBtn, 2, 1)
+        
+        self.setLayout(layout)
     
     def photoCapture(self):
         self.photoCount += 1;
         self.photoCountText.setText(np.str(self.photoCount))
-        return_value, image = self.camera.read()
+        return_value, image = self.record_video.camera.read()
         directory = os.path.abspath(os.path.join(os.path.curdir))
         self.directoryFolder = directory +"/images/"+np.str(self.employeeId)
         if not os.path.exists(self.directoryFolder):
@@ -126,6 +174,7 @@ class Registration(QMainWindow):
             self.saveBtn.setEnabled(True)
         else:
             self.saveBtn.setEnabled(False)
+    
     def save(self):
         ds = pd.read_csv(self.dataFileName)
         length = len(ds)
@@ -138,14 +187,14 @@ class Registration(QMainWindow):
         self.photoCount = 0
         self.openCameraBtn.setVisible(True)
         self.captureBtn.setVisible(False)
-        self.photoLabel.setVisible(False)
+        self.face_detection_widget.setVisible(False)
+        self.record_video.camera.release()
         self.photoCountText.setVisible(False)
         self.captureBtn.setEnabled(True)
-        self.setFixedSize(QSize(500, 150))
+        self.mainWindow.setFixedSize(QtCore.QSize(500, 150))
         self.photoCountText.setText(np.str(self.photoCount))
         self.employeeId = read_last_id(self.dataFileName) + 1
-        
-        
+
 def read_last_id(file_name):
     df = pd.read_csv(file_name)
     last_index = df.Id
@@ -165,11 +214,35 @@ def check_dir(file_name):
         df.to_csv(file_name,index=False)
         df
  
-if __name__ == "__main__":
-    def run_app():
-        check_dir('employees.csv')
-        app = QtWidgets.QApplication(sys.argv)
-        mainWin = Registration()
-        mainWin.show()
-        app.exec_()
-    run_app()
+def main(haar_cascade_filepath):
+    app = QtWidgets.QApplication(sys.argv)
+
+    check_dir('employees.csv')
+    
+    main_window = QtWidgets.QMainWindow()
+   
+    main_window.setFixedSize(QtCore.QSize(500, 150))
+    main_widget = MainWidget(haar_cascade_filepath, main_window)
+    
+    menu1 = main_window.menuBar().addMenu('New')
+    action1 = menu1.addAction('New Employee')
+    action1.triggered.connect(main_widget.newRegister)
+        
+    menu2 = main_window.menuBar().addMenu('Quit')
+    action2 = menu2.addAction('Quit')
+    action2.triggered.connect(QtWidgets.QApplication.quit)
+    
+    main_window.setWindowTitle("Face Base Attendance System") 
+    
+    main_window.setCentralWidget(main_widget)
+    main_window.show()
+    sys.exit(app.exec_())
+
+
+if __name__ == '__main__':
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    cascade_filepath = os.path.join(script_dir,
+                                 'haarcascade_frontalface_default.xml')
+
+    cascade_filepath = os.path.abspath(cascade_filepath)
+    main(cascade_filepath)
